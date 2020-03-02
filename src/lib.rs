@@ -342,7 +342,7 @@ fn atom_to_rss(bytes: &[u8]) -> Result<Channel, String> {
         } else {
             None
         });
-        item.set_pub_date(e.updated().add(FixedOffset::east(8 * 3600)).to_rfc2822());
+        item.set_pub_date(e.updated().add(FixedOffset::east(e.updated().offset().local_minus_utc())).to_rfc2822());
         item
     }).collect::<Vec<Item>>());
     Ok(channel)
@@ -399,7 +399,7 @@ async fn update_all_rss(force: bool) {
             if !rssvalue.item_uuid.contains(&id) {
                 let time = if let Some(t) = item.pub_date() {
                     if let Ok(t) = chrono::DateTime::parse_from_rfc2822(t) {
-                        t.add(FixedOffset::east(8 * 3600)).format("%F %T").to_string()
+                        t.add(FixedOffset::east(t.offset().local_minus_utc())).format("%F %T").to_string()
                     } else {
                         String::from("非法时间格式")
                     }
