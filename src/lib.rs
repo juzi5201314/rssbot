@@ -316,6 +316,7 @@ fn atom_to_rss(bytes: &[u8]) -> Result<Channel, String> {
         } else {
             None
         });
+        item.set_pub_date(e.updated().to_rfc2822());
         item
     }).collect::<Vec<Item>>());
     Ok(channel)
@@ -380,6 +381,9 @@ async fn update_all_rss(force: bool) {
                         .add(":")
                         .newline()
                         .add(item.link().unwrap_or_default().trim())
+                        .newline()
+                        .add("-- ")
+                        .add(item.pub_date().unwrap_or("未知时间"))
                         .to_string(),
                     );
                 })
