@@ -5,8 +5,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use chrono::TimeZone;
-use coolq_sdk_rust::api::{add_log, get_app_directory, get_login_qq, send_group_msg};
+use chrono::{TimeZone, FixedOffset};
+use coolq_sdk_rust::api::{add_log, get_app_directory, get_login_qq, send_group_msg, get_group_list};
 use coolq_sdk_rust::prelude::*;
 use coolq_sdk_rust::targets::user::Authority;
 use once_cell::sync::Lazy;
@@ -19,6 +19,7 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration, interval};
 use url::Url;
 use atom_syndication::Link;
+use std::ops::Add;
 
 static DATABASE: Lazy<RwLock<sled::Db>> = Lazy::new(|| {
     RwLock::new(
@@ -179,7 +180,8 @@ async fn process_command(event: &GroupMessageEvent, args: Vec<String>) -> Result
                 --help--\n\
                 /rss add <url> [no_validate]\n\
                 /rss del <url>\n\
-                /rss list\
+                /rss list\n\
+                /rss status\
                 ");
             }
             "list" => {
@@ -285,11 +287,35 @@ async fn process_command(event: &GroupMessageEvent, args: Vec<String>) -> Result
                         return Err("此rss订阅不存在".to_owned().into());
                     }
                 }
-            }
+            },
             "update" => {
                 if event.user.authority.check_authority(Authority::SuperAdmin) {
                     update_all_rss(true).await;
                 }
+            },
+            "status" => {
+                let db = DATABASE.read().await;
+                let tree = check_err!(db.open_tree("rsshub"));
+                event.reply(format!("\
+                数据库大小: {}KB\n\
+                rss源: {}条\
+                ", db.size_on_disk().unwrap() / 1024,
+                tree.len()));
+            },
+            "clear" => {
+                let tree = check_err!(open_rsshub().await, "数据库打开失败", true);
+                let groups: Vec<i64> = check_err!(check_err!(get_group_list()).try_to::<Vec<Group>>()).iter().map(|g| g.group_id).collect();
+                let mut dead = Vec::new();
+                tree.iter().for_each(|kv| {
+                    let kv = kv.unwrap();
+                    let mut v = RssValue::deserialize(kv.1.as_ref()).unwrap();
+                    v.groups = v.groups.iter().filter_map(|gid| if groups.contains(gid) { Some(*gid) } else {
+                        dead.push(*gid);
+                        None
+                    }).collect();
+                    tree.insert(kv.0, v.serialize().unwrap());
+                });
+                event.reply(format!("共清理{}个群。\n{:?}", dead.len(), dead));
             }
             _ => {}
         }
@@ -316,7 +342,7 @@ fn atom_to_rss(bytes: &[u8]) -> Result<Channel, String> {
         } else {
             None
         });
-        item.set_pub_date(e.updated().to_rfc2822());
+        item.set_pub_date(e.updated().add(FixedOffset::east(8 * 3600)).to_rfc2822());
         item
     }).collect::<Vec<Item>>());
     Ok(channel)
@@ -371,6 +397,15 @@ async fn update_all_rss(force: bool) {
             let id = hash(item.description().unwrap_or(item.content().unwrap_or(item.link().unwrap()).trim()));
             new_items.push(id);
             if !rssvalue.item_uuid.contains(&id) {
+                let time = if let Some(t) = item.pub_date() {
+                    if let Ok(t) = chrono::DateTime::parse_from_rfc2822(t) {
+                        t.add(FixedOffset::east(8 * 3600)).format("%F %T").to_string()
+                    } else {
+                        String::from("非法时间格式")
+                    }
+                } else {
+                    String::from("未知时间")
+                };
                 // update
                 rssvalue.groups.iter().for_each(|group_id| {
                     send_group_msg(*group_id, MessageSegment::new()
@@ -383,7 +418,7 @@ async fn update_all_rss(force: bool) {
                         .add(item.link().unwrap_or_default().trim())
                         .newline()
                         .add("-- ")
-                        .add(item.pub_date().unwrap_or("未知时间"))
+                        .add(&time)
                         .to_string(),
                     );
                 })
