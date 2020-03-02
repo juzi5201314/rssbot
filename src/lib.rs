@@ -205,10 +205,12 @@ async fn process_command(event: &GroupMessageEvent, args: Vec<String>) -> Result
                 if rss.is_empty() {
                     event.reply("没有rss订阅");
                 } else {
-                    // 分页，每页7个
-                    let page_count = 2;
-                    for page_i in 0..rss.len() / page_count {
+                    // 分页，每页5个
+                    let page_count = 5;
+                    let mut page_i = 0;
+                    for _ in 0..rss.len() / page_count {
                         let page = &rss[page_i..page_i + page_count];
+                        page_i += page_count;
                         event.reply(page.join("\n\n"));
                     }
                     if rss.len() % page_count > 0 {
@@ -373,8 +375,10 @@ async fn update_all_rss(force: bool) {
                     send_group_msg(*group_id, MessageSegment::new()
                         .add(channel.title())
                         .newline()
+                        .newline()
                         .add(item.title().unwrap_or_default().replace("\n", ""))
-                        .add(": ")
+                        .add(":")
+                        .newline()
                         .add(item.link().unwrap_or_default().trim())
                         .to_string(),
                     );
