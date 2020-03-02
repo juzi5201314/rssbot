@@ -20,6 +20,7 @@ use tokio::time::{Duration, interval};
 use url::Url;
 use atom_syndication::Link;
 use std::ops::Add;
+use regex::Regex;
 
 static DATABASE: Lazy<RwLock<sled::Db>> = Lazy::new(|| {
     RwLock::new(
@@ -33,6 +34,8 @@ static DATABASE: Lazy<RwLock<sled::Db>> = Lazy::new(|| {
 });
 
 static RUNTIME: Lazy<Runtime> = Lazy::new(|| Runtime::new().unwrap());
+
+static REG: Lazy<Regex> = Lazy::new(|| Regex::new(r#"<[^>]*>"#).unwrap());
 
 static ME_QQ: AtomicI64 = AtomicI64::new(0);
 
@@ -166,9 +169,9 @@ fn contains_and_get_rss(tree: &Tree, group: i64, link: &str) -> Result<Option<Rs
     }
 }
 
-fn hash<T: Hash + ?Sized>(t: &T) -> u64 {
+fn hash(s: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
-    t.hash(&mut hasher);
+    REG.replace_all(s, "").replace("\n", "").replace(" ", "").hash(&mut hasher);
     hasher.finish()
 }
 
@@ -342,7 +345,7 @@ fn atom_to_rss(bytes: &[u8]) -> Result<Channel, String> {
         } else {
             None
         });
-        item.set_pub_date(e.updated().add(FixedOffset::east(e.updated().offset().local_minus_utc())).to_rfc2822());
+        item.set_pub_date(e.updated().add(FixedOffset::west(e.updated().offset().local_minus_utc())).to_rfc2822());
         item
     }).collect::<Vec<Item>>());
     Ok(channel)
@@ -399,7 +402,7 @@ async fn update_all_rss(force: bool) {
             if !rssvalue.item_uuid.contains(&id) {
                 let time = if let Some(t) = item.pub_date() {
                     if let Ok(t) = chrono::DateTime::parse_from_rfc2822(t) {
-                        t.add(FixedOffset::east(t.offset().local_minus_utc())).format("%F %T").to_string()
+                        t.add(FixedOffset::west(t.offset().local_minus_utc())).format("%F %T").to_string()
                     } else {
                         String::from("非法时间格式")
                     }
@@ -429,6 +432,13 @@ async fn update_all_rss(force: bool) {
         tree.insert(key, rssvalue.serialize().unwrap());
         add_log(CQLogLevel::DEBUG, "update_all_rss", format!("更新订阅: {}({})", channel.title(), rssurl));
     }
+}
+
+#[test]
+fn test_clean_html() {
+    let reg = Regex::new(r#"<[^>]*>"#).unwrap();
+    let html = "<div class=\"push\"><div class=\"body\"><!-- push -->\n<div class=\"d-flex border-bottom py-3\">\n  <span class=\"mr-3\"><a class=\"d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\"><img class=\"avatar\" src=\"https://avatars2.githubusercontent.com/u/26034975?s=64&amp;v=4\" width=\"32\" height=\"32\" alt=\"@juzi5201314\"></a></span>\n  <div class=\"d-flex flex-column width-full\">\n    <div>\n      <a class=\"link-gray-dark no-underline text-bold wb-break-all d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\">juzi5201314</a>\n      \n      pushed to\n\n        <a class=\"branch-name\" href=\"/juzi5201314/coolq-sdk-rust/tree/master\" rel=\"noreferrer\">master</a>\n        in\n\n      <a class=\"link-gray-dark no-underline text-bold wb-break-all d-inline-block\" href=\"/juzi5201314/coolq-sdk-rust\" rel=\"noreferrer\">juzi5201314/coolq-sdk-rust</a>\n      <span class=\"f6 text-gray-light no-wrap ml-1\">\n        <relative-time datetime=\"2020-02-25T08:24:22Z\" class=\"no-wrap\">Feb 25, 2020</relative-time>\n      </span>\n\n        <div class=\"Box p-3 mt-2\">\n          <span>2 commits to</span>\n          <a class=\"branch-name\" href=\"/juzi5201314/coolq-sdk-rust/tree/master\" rel=\"noreferrer\">master</a>\n\n          <div class=\"commits pusher-is-only-committer\">\n            <ul>\n                <li class=\"d-flex flex-items-baseline\">\n                  <span title=\"juzi5201314\">\n                    <a class=\"d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\"><img class=\"mr-1\" src=\"https://avatars1.githubusercontent.com/u/26034975?s=32&amp;v=4\" width=\"16\" height=\"16\" alt=\"@juzi5201314\"></a>\n                  </span>\n                  <code><a class=\"mr-1\" href=\"/juzi5201314/coolq-sdk-rust/commit/b3619a50b2f1f6a9dcc2555290a659b8c43aef63\" rel=\"noreferrer\">b3619a5</a></code>\n                  <div class=\"dashboard-break-word lh-condensed\">\n                    <blockquote>\n                      Merge remote-tracking branch \'origin/master\'\n                    </blockquote>\n                  </div>\n                </li>\n                <li class=\"d-flex flex-items-baseline\">\n                  <span title=\"juzi5201314\">\n                    <a class=\"d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\"><img class=\"mr-1\" src=\"https://avatars1.githubusercontent.com/u/26034975?s=32&amp;v=4\" width=\"16\" height=\"16\" alt=\"@juzi5201314\"></a>\n                  </span>\n                  <code><a class=\"mr-1\" href=\"/juzi5201314/coolq-sdk-rust/commit/b6f306aa245017d75a44a4f8ca5f6c6f98b3a302\" rel=\"noreferrer\">b6f306a</a></code>\n                  <div class=\"dashboard-break-word lh-condensed\">\n                    <blockquote>\n                      现在new一个group和user的时候，如果酷q api失败不会panic了，会返回一个只有id，其他消息都是default的struct。\n                    </blockquote>\n                  </div>\n                </li>\n\n\n                <li class=\"f6 mt-2\">\n                  <a class=\"link-gray\" href=\"/juzi5201314/coolq-sdk-rust/compare/af947443b9...b3619a50b2\" rel=\"noreferrer\">3 more commits »</a>\n                </li>\n            </ul>\n          </div>\n        </div>\n    </div>\n  </div>\n</div>\n</div></div>";
+    dbg!(reg.replace_all(html, "").replace("\n", "").replace(" ", ""));
 }
 
 #[test]
