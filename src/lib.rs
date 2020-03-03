@@ -224,7 +224,8 @@ async fn process_command(event: &GroupMessageEvent, args: Vec<String>) -> Result
             }
             "add" => {
                 check_args!(args, 3, "/rss add <url> [no_validate]");
-                let url = check_err!(Url::parse(args.get(2).unwrap()), "请输入正确url", true);
+                //let url = check_err!(Url::parse(args.get(2).unwrap()), "请输入正确url", true);
+                let url = args.get(2).unwrap();
                 let url = url.as_str();
                 let tree = check_err!(open_rsshub().await, "数据库打开失败", true);
                 let rss = contains_and_get_rss(&tree, event.group.group_id, url)?;
@@ -245,7 +246,7 @@ async fn process_command(event: &GroupMessageEvent, args: Vec<String>) -> Result
                     v.last_update = chrono::Local::now().timestamp();
                     v.title = channel.title().to_string();
                     v.item_uuid = channel.items().iter().map(|item| {
-                        hash(item.description().unwrap_or(item.content().unwrap_or(item.link().unwrap())).trim())
+                        hash(item.pub_date().unwrap_or(item.link().unwrap().trim()))
                     }).collect();
                     // 抓取间隔。单位： 分钟
                     // 如未设置ttl，默认10分钟。最大90分钟。
@@ -305,24 +306,39 @@ async fn process_command(event: &GroupMessageEvent, args: Vec<String>) -> Result
                 tree.len()));
             },
             "clear" => {
-                let tree = check_err!(open_rsshub().await, "数据库打开失败", true);
-                let groups: Vec<i64> = check_err!(check_err!(get_group_list()).try_to::<Vec<Group>>()).iter().map(|g| g.group_id).collect();
-                let mut dead = Vec::new();
-                tree.iter().for_each(|kv| {
-                    let kv = kv.unwrap();
-                    let mut v = RssValue::deserialize(kv.1.as_ref()).unwrap();
-                    v.groups = v.groups.iter().filter_map(|gid| if groups.contains(gid) { Some(*gid) } else {
-                        dead.push(*gid);
-                        None
-                    }).collect();
-                    tree.insert(kv.0, v.serialize().unwrap());
-                });
-                event.reply(format!("共清理{}个群。\n{:?}", dead.len(), dead));
+                if event.user.authority.check_authority(Authority::SuperAdmin) {
+                    let tree = check_err!(open_rsshub().await, "数据库打开失败", true);
+                    let groups: Vec<i64> = check_err!(check_err!(get_group_list()).try_to::<Vec<Group>>()).iter().map(|g| g.group_id).collect();
+                    let mut dead = Vec::new();
+                    tree.iter().for_each(|kv| {
+                        let kv = kv.unwrap();
+                        let mut v = RssValue::deserialize(kv.1.as_ref()).unwrap();
+                        v.groups = v.groups.iter().filter_map(|gid| if groups.contains(gid) { Some(*gid) } else {
+                            dead.push(*gid);
+                            None
+                        }).collect();
+                        tree.insert(kv.0, v.serialize().unwrap());
+                    });
+                    event.reply(format!("共清理{}个群。\n{:?}", dead.len(), dead));
+                }
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+#[inline]
+fn truncate(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        None => s,
+        Some((idx, _)) => &s[..idx],
+    }
+}
+
+#[inline]
+fn html_to_text(html: &str, width: usize) -> String {
+    html2text::from_read_with_decorator(html.as_bytes(), width, html2text::render::text_renderer::TrivialDecorator::new())
 }
 
 fn atom_to_rss(bytes: &[u8]) -> Result<Channel, String> {
@@ -396,7 +412,7 @@ async fn update_all_rss(force: bool) {
                 return;
             }
             now += 1;
-            let id = hash(item.description().unwrap_or(item.content().unwrap_or(item.link().unwrap()).trim()));
+            let id = hash(item.pub_date().unwrap_or(item.link().unwrap().trim()));
             new_items.push(id);
             if !rssvalue.item_uuid.contains(&id) {
                 let time = if let Some(t) = item.pub_date() {
@@ -413,17 +429,15 @@ async fn update_all_rss(force: bool) {
                 rssvalue.groups.iter().for_each(|group_id| {
                     send_group_msg(*group_id, MessageSegment::new()
                         .add(channel.title())
-                        .newline()
-                        .newline()
-                        .add(item.title().unwrap_or_default().replace("\n", "").trim())
-                        .add(":")
-                        .newline()
+                        .newlines(2)
+                        .add(format!("{} --{}", item.title().unwrap_or_default().replace("\n", "").trim(), &time))
+                        .newlines(2)
                         .add(item.link().unwrap_or_default().trim())
-                        .newline()
-                        .add("-- ")
-                        .add(&time)
+                        .newlines(2)
+                        .add(truncate(html_to_text(item.description().unwrap_or(item.content().unwrap_or_default()), 30).as_ref(), 70))
                         .to_string(),
                     );
+                    //add_log(10, "迁移中", format!("迁移: {}", rssurl));
                 })
             }
         });
@@ -436,9 +450,11 @@ async fn update_all_rss(force: bool) {
 
 #[test]
 fn test_clean_html() {
+    let r = Regex::new(r#"\n\s*\n"#).unwrap();
     let reg = Regex::new(r#"<[^>]*>"#).unwrap();
-    let html = "<div class=\"push\"><div class=\"body\"><!-- push -->\n<div class=\"d-flex border-bottom py-3\">\n  <span class=\"mr-3\"><a class=\"d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\"><img class=\"avatar\" src=\"https://avatars2.githubusercontent.com/u/26034975?s=64&amp;v=4\" width=\"32\" height=\"32\" alt=\"@juzi5201314\"></a></span>\n  <div class=\"d-flex flex-column width-full\">\n    <div>\n      <a class=\"link-gray-dark no-underline text-bold wb-break-all d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\">juzi5201314</a>\n      \n      pushed to\n\n        <a class=\"branch-name\" href=\"/juzi5201314/coolq-sdk-rust/tree/master\" rel=\"noreferrer\">master</a>\n        in\n\n      <a class=\"link-gray-dark no-underline text-bold wb-break-all d-inline-block\" href=\"/juzi5201314/coolq-sdk-rust\" rel=\"noreferrer\">juzi5201314/coolq-sdk-rust</a>\n      <span class=\"f6 text-gray-light no-wrap ml-1\">\n        <relative-time datetime=\"2020-02-25T08:24:22Z\" class=\"no-wrap\">Feb 25, 2020</relative-time>\n      </span>\n\n        <div class=\"Box p-3 mt-2\">\n          <span>2 commits to</span>\n          <a class=\"branch-name\" href=\"/juzi5201314/coolq-sdk-rust/tree/master\" rel=\"noreferrer\">master</a>\n\n          <div class=\"commits pusher-is-only-committer\">\n            <ul>\n                <li class=\"d-flex flex-items-baseline\">\n                  <span title=\"juzi5201314\">\n                    <a class=\"d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\"><img class=\"mr-1\" src=\"https://avatars1.githubusercontent.com/u/26034975?s=32&amp;v=4\" width=\"16\" height=\"16\" alt=\"@juzi5201314\"></a>\n                  </span>\n                  <code><a class=\"mr-1\" href=\"/juzi5201314/coolq-sdk-rust/commit/b3619a50b2f1f6a9dcc2555290a659b8c43aef63\" rel=\"noreferrer\">b3619a5</a></code>\n                  <div class=\"dashboard-break-word lh-condensed\">\n                    <blockquote>\n                      Merge remote-tracking branch \'origin/master\'\n                    </blockquote>\n                  </div>\n                </li>\n                <li class=\"d-flex flex-items-baseline\">\n                  <span title=\"juzi5201314\">\n                    <a class=\"d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\"><img class=\"mr-1\" src=\"https://avatars1.githubusercontent.com/u/26034975?s=32&amp;v=4\" width=\"16\" height=\"16\" alt=\"@juzi5201314\"></a>\n                  </span>\n                  <code><a class=\"mr-1\" href=\"/juzi5201314/coolq-sdk-rust/commit/b6f306aa245017d75a44a4f8ca5f6c6f98b3a302\" rel=\"noreferrer\">b6f306a</a></code>\n                  <div class=\"dashboard-break-word lh-condensed\">\n                    <blockquote>\n                      现在new一个group和user的时候，如果酷q api失败不会panic了，会返回一个只有id，其他消息都是default的struct。\n                    </blockquote>\n                  </div>\n                </li>\n\n\n                <li class=\"f6 mt-2\">\n                  <a class=\"link-gray\" href=\"/juzi5201314/coolq-sdk-rust/compare/af947443b9...b3619a50b2\" rel=\"noreferrer\">3 more commits »</a>\n                </li>\n            </ul>\n          </div>\n        </div>\n    </div>\n  </div>\n</div>\n</div></div>";
-    dbg!(reg.replace_all(html, "").replace("\n", "").replace(" ", ""));
+    let html = "\n<div class=\"push\"><p>ennc</p><div class=\"body\"><!-- push -->\n<div class=\"d-flex border-bottom py-3\">\n  <span class=\"mr-3\"><a class=\"d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\"><img class=\"avatar\" src=\"https://avatars2.githubusercontent.com/u/26034975?s=64&amp;v=4\" width=\"32\" height=\"32\" alt=\"@juzi5201314\"></a></span>\n  <div class=\"d-flex flex-column width-full\">\n    <div>\n      <a class=\"link-gray-dark no-underline text-bold wb-break-all d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\">juzi5201314</a>\n      \n      pushed to\n\n        <a class=\"branch-name\" href=\"/juzi5201314/coolq-sdk-rust/tree/master\" rel=\"noreferrer\">master</a>\n        in\n\n      <a class=\"link-gray-dark no-underline text-bold wb-break-all d-inline-block\" href=\"/juzi5201314/coolq-sdk-rust\" rel=\"noreferrer\">juzi5201314/coolq-sdk-rust</a>\n      <span class=\"f6 text-gray-light no-wrap ml-1\">\n        <relative-time datetime=\"2020-02-25T08:24:22Z\" class=\"no-wrap\">Feb 25, 2020</relative-time>\n      </span>\n\n        <div class=\"Box p-3 mt-2\">\n          <span>2 commits to</span>\n          <a class=\"branch-name\" href=\"/juzi5201314/coolq-sdk-rust/tree/master\" rel=\"noreferrer\">master</a>\n\n          <div class=\"commits pusher-is-only-committer\">\n            <ul>\n                <li class=\"d-flex flex-items-baseline\">\n                  <span title=\"juzi5201314\">\n                    <a class=\"d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\"><img class=\"mr-1\" src=\"https://avatars1.githubusercontent.com/u/26034975?s=32&amp;v=4\" width=\"16\" height=\"16\" alt=\"@juzi5201314\"></a>\n                  </span>\n                  <code><a class=\"mr-1\" href=\"/juzi5201314/coolq-sdk-rust/commit/b3619a50b2f1f6a9dcc2555290a659b8c43aef63\" rel=\"noreferrer\">b3619a5</a></code>\n                  <div class=\"dashboard-break-word lh-condensed\">\n                    <blockquote>\n                      Merge remote-tracking branch \'origin/master\'\n                    </blockquote>\n                  </div>\n                </li>\n                <li class=\"d-flex flex-items-baseline\">\n                  <span title=\"juzi5201314\">\n                    <a class=\"d-inline-block\" href=\"/juzi5201314\" rel=\"noreferrer\"><img class=\"mr-1\" src=\"https://avatars1.githubusercontent.com/u/26034975?s=32&amp;v=4\" width=\"16\" height=\"16\" alt=\"@juzi5201314\"></a>\n                  </span>\n                  <code><a class=\"mr-1\" href=\"/juzi5201314/coolq-sdk-rust/commit/b6f306aa245017d75a44a4f8ca5f6c6f98b3a302\" rel=\"noreferrer\">b6f306a</a></code>\n                  <div class=\"dashboard-break-word lh-condensed\">\n                    <blockquote>\n                      现在new一个group和user的时候，如果酷q api失败不会panic了，会返回一个只有id，其他消息都是default的struct。\n                    </blockquote>\n                  </div>\n                </li>\n\n\n                <li class=\"f6 mt-2\">\n                  <a class=\"link-gray\" href=\"/juzi5201314/coolq-sdk-rust/compare/af947443b9...b3619a50b2\" rel=\"noreferrer\">3 more commits »</a>\n                </li>\n            </ul>\n          </div>\n        </div>\n    </div>\n  </div>\n</div>\n</div></div>";
+    //dbg!(r.replace_all(&reg.replace_all(html, "").to_string(), "两个").replace(" ", ""));
+    println!("{:?}", html2text::from_read_with_decorator(html.as_bytes(), 15, html2text::render::text_renderer::TrivialDecorator::new()));
 }
 
 #[test]
