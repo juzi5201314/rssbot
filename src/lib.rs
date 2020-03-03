@@ -5,11 +5,13 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use chrono::{TimeZone, FixedOffset};
-use coolq_sdk_rust::api::{add_log, get_app_directory, get_login_qq, send_group_msg, get_group_list};
+use atom_syndication::Link;
+use chrono::{TimeZone, Local};
+use coolq_sdk_rust::api::{add_log, get_app_directory, get_group_list, get_login_qq, send_group_msg};
 use coolq_sdk_rust::prelude::*;
 use coolq_sdk_rust::targets::user::Authority;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use rss::{Channel, Item};
 use rss::validation::Validate;
 use serde::{Deserialize, Serialize};
@@ -18,9 +20,6 @@ use tokio::runtime::Runtime;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, interval};
 use url::Url;
-use atom_syndication::Link;
-use std::ops::Add;
-use regex::Regex;
 
 static DATABASE: Lazy<RwLock<sled::Db>> = Lazy::new(|| {
     RwLock::new(
@@ -345,7 +344,7 @@ fn atom_to_rss(bytes: &[u8]) -> Result<Channel, String> {
         } else {
             None
         });
-        item.set_pub_date(e.updated().add(FixedOffset::west(e.updated().offset().local_minus_utc())).to_rfc2822());
+        item.set_pub_date(e.updated().to_rfc2822());
         item
     }).collect::<Vec<Item>>());
     Ok(channel)
@@ -402,7 +401,8 @@ async fn update_all_rss(force: bool) {
             if !rssvalue.item_uuid.contains(&id) {
                 let time = if let Some(t) = item.pub_date() {
                     if let Ok(t) = chrono::DateTime::parse_from_rfc2822(t) {
-                        t.add(FixedOffset::west(t.offset().local_minus_utc())).format("%F %T").to_string()
+                        //t.checked_add_signed(time::Duration::seconds(t.offset().local_minus_utc() as i64)).unwrap().format("%F %T").to_string()
+                        t.with_timezone(&Local).format("%F %T").to_string()
                     } else {
                         String::from("非法时间格式")
                     }
@@ -415,7 +415,7 @@ async fn update_all_rss(force: bool) {
                         .add(channel.title())
                         .newline()
                         .newline()
-                        .add(item.title().unwrap_or_default().replace("\n", ""))
+                        .add(item.title().unwrap_or_default().replace("\n", "").trim())
                         .add(":")
                         .newline()
                         .add(item.link().unwrap_or_default().trim())
