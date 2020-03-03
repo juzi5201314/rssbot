@@ -19,7 +19,6 @@ use sled::{IVec, Tree};
 use tokio::runtime::Runtime;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, interval};
-use url::Url;
 
 static DATABASE: Lazy<RwLock<sled::Db>> = Lazy::new(|| {
     RwLock::new(
@@ -329,10 +328,10 @@ async fn process_command(event: &GroupMessageEvent, args: Vec<String>) -> Result
 }
 
 #[inline]
-fn truncate(s: &str, max_chars: usize) -> &str {
+fn truncate(s: &str, max_chars: usize) -> String {
     match s.char_indices().nth(max_chars) {
-        None => s,
-        Some((idx, _)) => &s[..idx],
+        None => s.to_owned(),
+        Some((idx, _)) => format!("{} ...", &s[..idx]),
     }
 }
 
@@ -427,15 +426,22 @@ async fn update_all_rss(force: bool) {
                 };
                 // update
                 rssvalue.groups.iter().for_each(|group_id| {
-                    send_group_msg(*group_id, MessageSegment::new()
+                    fn send(group_id: i64, ms: &MessageSegment) {
+                        if let Err(e) = send_group_msg(group_id, ms) {
+                            if e.0 == -2 {
+                                add_log(CQLogLevel::WARNING, "消息发送失败", format!("重新发送: {}", ms));
+                                send(group_id, ms)
+                            }
+                        }
+                    }
+                    send(*group_id, MessageSegment::new()
                         .add(channel.title())
                         .newlines(2)
                         .add(format!("{} --{}", item.title().unwrap_or_default().replace("\n", "").trim(), &time))
                         .newlines(2)
                         .add(item.link().unwrap_or_default().trim())
                         .newlines(2)
-                        .add(truncate(html_to_text(item.description().unwrap_or(item.content().unwrap_or_default()), 30).as_ref(), 70))
-                        .to_string(),
+                        .add(truncate(html_to_text(item.description().unwrap_or(item.content().unwrap_or_default()), 28).as_ref(), 100))
                     );
                     //add_log(10, "迁移中", format!("迁移: {}", rssurl));
                 })
